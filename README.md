@@ -23,7 +23,8 @@ files, and you don't have to log out and back in as another user to play.
    environment (`env -i`), so nothing from your session leaks into Steam
    except `DISPLAY` and `LANG`.
 3. **Start Steam:** it bootstraps Steam on first use (`lsu-bootstrap`), then
-   runs linux-steam-utils' `steam`.
+   runs linux-steam-utils' `steam`, with Steam's own UI on the GPU (see
+   [Steam's UI on the GPU](#steams-ui-on-the-gpu)).
 
 When started from the menu or taskbar, all output goes to
 `~/.cache/mdo-steam.log`.
@@ -183,6 +184,57 @@ allows. Steam's setup then fails with `zenity: cannot open display`.
 on every start. X's own access control still applies: only your session and
 the users you allowed with `xhost` can connect.
 
+## Steam's UI on the GPU
+
+Steam's interface, Big Picture mode included, is drawn by its built-in
+Chromium (`steamwebhelper`). linux-steam-utils always starts it with
+`--disable-gpu`, to avoid a black main window on X11 without a compositor
+([steam-for-linux#11488](https://github.com/ValveSoftware/steam-for-linux/issues/11488)).
+The UI then renders in software (SwiftShader), which makes Big Picture
+sluggish.
+
+**What `mdo-steam` does by default:**
+- **Wrapper:** it starts the webhelper through a small wrapper,
+  `~steam/.local/libexec/steamwebhelper-gpu.sh`, that drops that flag. The
+  UI then renders on the GPU through ANGLE over OpenGL (NVIDIA GLX here).
+- **GBM path:** the wrapper also points `GBM_BACKENDS_PATH` at the chroot's
+  GBM directory. Rocky's libgbm looks in `/usr/lib64/gbm`, which doesn't
+  exist inside the webhelper's chroot.
+- **Replaced file:** it does this by rewriting linux-steam-utils'
+  `ubuntu12_64/steamwebhelper.sh.patched` on every start.
+
+**On X11 without a compositor**, start it with `MDO_STEAM_GPU=0`. That keeps
+`--disable-gpu`, and puts linux-steam-utils' own wrapper back.
+
+To check, look for these in `~steam/.steam/steam/logs/webhelper_gpu.txt`:
+- `GL_RENDERER` naming your GPU
+- `gpu_compositing: enabled`
+
+## Windows games
+
+Windows-only games need a compatibility tool. In Steam, open the game's
+**Properties → Compatibility** and pick **FreeBSD Wine (emulators/wine-proton)**,
+the tool linux-steam-utils recommends.
+- **Install wine-proton:** `pkg install wine-proton`.
+- **Proton 11.0 from Steam:** the tool also needs Steam's own "Proton 11.0",
+  which Steam installs when it first launches a game with this tool.
+- **First launch:** it creates the game's Wine prefix and downloads Wine
+  Mono.
+- **The other tool:** "LSU chroot with Proton 8" additionally needs
+  "Proton 8.0" and "SteamLinuxRuntime_sniper" installed in Steam. Steam won't
+  install those by itself here.
+
+**NVIDIA and DXVK:** one Unity/D3D11 game crashed about 2 minutes in, inside
+the native NVIDIA Vulkan driver, through DXVK (`err:vulkan:vkAllocateMemory
+Exception 0xc0000005`). Running it through OpenGL instead fixed it: set the
+game's launch options to
+
+```
+PROTON_USE_WINED3D=1 %command%
+```
+
+This is slower than DXVK, so use it only for games that crash.
+
 ## Troubleshooting
 
 | Symptom | Cause |
@@ -192,6 +244,10 @@ the users you allowed with `xhost` can connect.
 | `lsu-bootstrap` refuses to run | The steam user is in `wheel`. |
 | `zenity: cannot open display`, `unable to open display` | X socket permission, or `xhost` failed. |
 | `mdo: ... not permitted` | The mac_do rule doesn't match. Check the IDs, and that `mac_do` is loaded. |
+| Big Picture or the Steam UI is slow | The UI is on software rendering: see [Steam's UI on the GPU](#steams-ui-on-the-gpu). |
+| Black Steam window | X11 without a compositor: start with `MDO_STEAM_GPU=0`. |
+| A game does nothing, and the log says `Can't find Proton 8.0` | The "LSU chroot with Proton 8" tool is missing its Proton and runtime: use wine-proton instead (see [Windows games](#windows-games)). |
+| A game crashes in `vkAllocateMemory` on NVIDIA | Use `PROTON_USE_WINED3D=1 %command%`. |
 | Steam isn't in `ps` | If `security.bsd.see_other_uids=0`, you can't see the steam user's processes. Use `mdo -u steam ps -x`. |
 
 Steam's own logs are in `~steam/.steam/steam/logs/`; read them with
@@ -199,10 +255,14 @@ Steam's own logs are in `~steam/.steam/steam/logs/`; read them with
 
 ## Known issues
 
-- **A second launch can kill the running Steam.** Starting `mdo-steam` again,
-  including clicking a `steam://` link, makes Steam forward the request to
-  the running client and exit. linux-steam-utils' cleanup then kills leftover
-  processes, which can include the first instance's. Start Steam once.
+- **A second launch kills the running Steam.** Starting `mdo-steam` or
+  linux-steam-utils' `steam` again, including clicking a `steam://` link or
+  running `steam -shutdown`:
+  - `lsu-kill` reads `steam.pid` and kills the running client with SIGKILL.
+  - Steam's own command pipe doesn't work here, so a running client can't be
+    sent commands at all.
+  - Start Steam once, launch games from its UI, and quit with Steam → Exit.
+  - If Steam hangs: `mdo -u steam sh -c 'kill -TERM $(cat ~/.steam/steam.pid)'`.
 - **Log noise:** Steam's built-in browser may log a crashed GPU process
   (`GpuMemoryThread ... signal 11`) and `steam-runtime-launcher-service`
   failures. The client still starts.
@@ -214,5 +274,11 @@ Steam's own logs are in `~steam/.steam/steam/logs/`; read them with
 - KDE Plasma 6 on Wayland, with Steam on Xwayland
 - linux-steam-utils 20260923, linux_base-rl9 9.8
 
-Status: Steam starts, updates itself and reaches its login page. Running
-games hasn't been verified yet.
+Status:
+- **Client:** Steam starts, updates itself and logs in.
+- **UI:** it renders on the RTX 4060.
+- **Games:** a Unity/D3D11 Windows game (Monster Girl Island: Prologue)
+  reaches its main menu and runs through wine-proton with wined3d. Gameplay
+  beyond the menu hasn't been tested.
+- **Not checked:** Big Picture performance after the GPU fix hasn't been
+  measured yet.

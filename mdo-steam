@@ -12,6 +12,8 @@
 #
 # Environment:
 #	MDO_STEAM_USER	the user Steam runs as (default: steam)
+#	MDO_STEAM_GPU	0 keeps linux-steam-utils' --disable-gpu for Steam's
+#			UI (needed on X11 without a compositor; default: 1)
 
 user=${MDO_STEAM_USER:-steam}
 
@@ -36,10 +38,47 @@ exec mdo -u "$user" /usr/bin/env -i \
     HOME="$home" USER="$user" LOGNAME="$user" SHELL=/bin/sh \
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     LANG="${LANG:-en_US.UTF-8}" DISPLAY="$DISPLAY" \
-    XDG_RUNTIME_DIR="$home/.run" \
+    XDG_RUNTIME_DIR="$home/.run" MDO_STEAM_GPU="${MDO_STEAM_GPU:-1}" \
     /bin/sh -c '
 	mkdir -p -m 700 "$XDG_RUNTIME_DIR" || exit 1
 	cd || exit 1
 	[ -x .steam/steam/steam.sh ] ||
 	    /usr/local/steam-utils/bin/lsu-bootstrap || exit 1
+
+	# lsu-webhelper-chroot appends --disable-gpu to the webhelper for
+	# steam-for-linux#11488 (a black main window on X11 without a
+	# compositor), which leaves the Steam UI and Big Picture on
+	# SwiftShader.  Under a compositor (KWin, Xwayland) start the
+	# webhelper through a wrapper that drops the flag.  lsu-patch-steam
+	# regenerates its .patched file only when it is older than itself, so
+	# writing ours on every start wins.
+	patched=.steam/steam/ubuntu12_64/steamwebhelper.sh.patched
+	wrapper=.local/libexec/steamwebhelper-gpu.sh
+	if [ "$MDO_STEAM_GPU" = 0 ]; then
+		# back to lsu'"'"'s own wrapper: let lsu-patch-steam rewrite it
+		grep -qs steamwebhelper-gpu.sh "$patched" && rm -f "$patched"
+	else
+		mkdir -p .local/libexec || exit 1
+		cat >"$wrapper" <<"EOF" || exit 1
+#!/bin/sh
+# run in the lsu webhelper chroot in place of steamwebhelper_sniper_wrap.sh
+for a do
+	shift
+	[ "$a" = --disable-gpu ] || set -- "$@" "$a"
+done
+# the Rocky libgbm looks in /usr/lib64/gbm, the chroot has it here
+export GBM_BACKENDS_PATH=/usr/lib/x86_64-linux-gnu/gbm
+exec ./steamwebhelper_sniper_wrap.sh "$@"
+EOF
+		chmod 755 "$wrapper" || exit 1
+		# (no ubuntu12_64 before the client has updated itself once)
+		if [ -d "${patched%/*}" ]; then
+			cat >"$patched" <<"EOF" || exit 1
+#!/bin/sh
+cd "$(dirname "$(realpath "$0")")" && exec lsu-webhelper-chroot "$HOME/.local/libexec/steamwebhelper-gpu.sh" "$@"
+EOF
+			chmod 700 "$patched" || exit 1
+		fi
+	fi
+
 	exec /usr/local/bin/steam "$@"' mdo-steam "$@"
