@@ -1,0 +1,45 @@
+#!/bin/sh
+#
+# mdo-steam: run Steam (games/linux-steam-utils) as a separate, unprivileged
+# user inside your running desktop session, so Steam and its games never see
+# your own files, and you do not have to log out to play.
+#
+# Requires mac_do(4) with a rule letting you become the steam user, and the
+# steam user must not be in wheel (lsu-bootstrap refuses group 0).  See
+# README.md for the full setup.
+#
+# usage: mdo-steam [steam arguments]	the first run bootstraps Steam
+#
+# Environment:
+#	MDO_STEAM_USER	the user Steam runs as (default: steam)
+
+user=${MDO_STEAM_USER:-steam}
+
+# started from the menu or taskbar: keep what it says
+[ -t 2 ] || exec >>"${XDG_CACHE_HOME:-$HOME/.cache}/mdo-steam.log" 2>&1
+
+: "${DISPLAY:?no X display: run this from the desktop session}"
+
+home=$(getent passwd "$user" | cut -d: -f6)
+[ -n "$home" ] || { echo "mdo-steam: no such user: $user" >&2; exit 1; }
+
+# Let the steam user draw on this session's X server (Xwayland included).
+# KWin, among others, creates the socket 0755, and FreeBSD needs write
+# access to connect(2) to a socket; X access control (xhost) still admits
+# only this session and the steam user.
+xhost "+si:localuser:$user" >/dev/null || exit 1
+dpy=${DISPLAY#*:}
+sock="/tmp/.X11-unix/X${dpy%%.*}"
+[ -S "$sock" ] && { chmod go+w "$sock" || exit 1; }
+
+exec mdo -u "$user" /usr/bin/env -i \
+    HOME="$home" USER="$user" LOGNAME="$user" SHELL=/bin/sh \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    LANG="${LANG:-en_US.UTF-8}" DISPLAY="$DISPLAY" \
+    XDG_RUNTIME_DIR="$home/.run" \
+    /bin/sh -c '
+	mkdir -p -m 700 "$XDG_RUNTIME_DIR" || exit 1
+	cd || exit 1
+	[ -x .steam/steam/steam.sh ] ||
+	    /usr/local/steam-utils/bin/lsu-bootstrap || exit 1
+	exec /usr/local/bin/steam "$@"' mdo-steam "$@"

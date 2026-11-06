@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Steam
+Comment=Steam as the separate steam user, in a clean environment
+Exec=mdo-steam %U
+Icon=steam
+Terminal=false
+Type=Application
+Categories=Game;
+MimeType=x-scheme-handler/steam;x-scheme-handler/steamlink;
+StartupWMClass=steam
